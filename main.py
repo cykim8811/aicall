@@ -35,14 +35,10 @@ f = wave.open('./GREETINGS.wav', 'rb')
 greeting_audio = f.readframes(f.getnframes())
 f.close()
 
-import struct
-import audioop
 def convert_audio(chunk):
     output_bytes = bytearray()
     for byte in chunk:
-        # 8비트 부호 없는 정수를 16비트 부호 있는 정수로 변환
         sample_16bit = (byte - 128) * 256
-        # 16비트 샘플을 리틀 엔디안 바이트 순서로 추가
         output_bytes.extend(sample_16bit.to_bytes(2, byteorder='little', signed=True))
     return bytes(output_bytes)
 
@@ -133,17 +129,25 @@ class RTZROpenAPIClient:
                     input_thread.join()
                 except Exception as e:
                     print(e)
+            
+            from output_stream import run_tts
+            input_queue = []
+            halt_tts = []
+            tts_hangup = []
+            tts_thread = threading.Thread(target=run_tts, args=(call, input_queue, halt_tts, tts_hangup))
+            tts_thread.start()
 
             req_iter = req_iterator()
             resp_iter = stub.Decode(req_iter, credentials=cred)
             for resp in resp_iter:
                 resp: pb.DecoderResponse
                 for res in resp.results:
-                    print(
-                        "[online-grpc] final:{}, text:{}".format(
-                            res.is_final, res.alternatives[0].text
-                        )
-                    )
+                    if res.is_final:
+                        print("User:", res.alternatives[0].text)
+                        input_queue.append(res.alternatives[0].text)
+            
+            halt_tts.append(True)
+            tts_thread.join()
 
     def save_audio_chunk(self, chunk):
         if not hasattr(self, 'audio_file'):
