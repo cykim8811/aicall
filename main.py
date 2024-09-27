@@ -98,6 +98,13 @@ class RTZROpenAPIClient:
             resp.raise_for_status()
             self._token = resp.json()
         return self._token["access_token"]
+    
+    def send_audio(self, call, queue):
+        while call.state == CallState.ANSWERED:
+            audio = call.read_audio()
+            if audio is None:
+                break
+            queue.append(audio)
 
     def transcribe_streaming_grpc(self, call, config):
         base = GRPC_SERVER_URL
@@ -110,14 +117,20 @@ class RTZROpenAPIClient:
             def req_iterator():
                 yield pb.DecoderRequest(streaming_config=config)
                 try:
+                    queue = []
+                    input_thread = threading.Thread(target=self.send_audio, args=(call, queue))
+                    input_thread.start()
                     while call.state == CallState.ANSWERED:
-                        buff = call.read_audio()
-                        if buff is None or len(buff) == 0:
-                            break
+                        time.sleep(1/50)
+                        if len(queue) == 0:
+                            buff = b"\x00" * 160
+                        else:
+                            buff = queue.pop(0)
                         buff = convert_audio(buff)
                         yield pb.DecoderRequest(audio_content=buff)
                         # 오디오 데이터를 파일에 저장
                         self.save_audio_chunk(buff)
+                    input_thread.join()
                 except Exception as e:
                     print(e)
 
