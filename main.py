@@ -27,36 +27,24 @@ GRPC_SERVER_URL = "grpc-openapi.vito.ai:443"
 CLIENT_ID = os.environ.get("CLIENT_ID")
 CLIENT_SECRET = os.environ.get("CLIENT_SECRET")
 
-
 SAMPLE_RATE = 8000
-ENCODING = pb.DecoderConfig.AudioEncoding.MULAW
+ENCODING = pb.DecoderConfig.AudioEncoding.LINEAR16
 BYTES_PER_SAMPLE = 2
 
 f = wave.open('./GREETINGS.wav', 'rb')
 greeting_audio = f.readframes(f.getnframes())
 f.close()
 
-import numpy as np
-from scipy import signal
-
-def mulaw_decode(mulaw_data):
-    mu = 255
-    y = mulaw_data.astype(float)
-    y = 2 * (y / 255) - 1
-    x = np.sign(y) * (1 / mu) * ((1 + mu)**abs(y) - 1)
-    return x
-
-def convert_audio(mulaw_chunk):
-    # Step 1: Decode mu-law to linear PCM
-    pcm_data = mulaw_decode(np.frombuffer(mulaw_chunk, dtype=np.uint8))
-    
-    # Step 2: Upsample from 8kHz to 16kHz
-    resampled_data = signal.resample(pcm_data, len(pcm_data) * 2)
-    
-    # Step 3: Convert to 16-bit PCM
-    pcm_16bit = (resampled_data * 32767).astype(np.int16)
-    
-    return pcm_16bit.tobytes()
+import struct
+import audioop
+def convert_audio(chunk):
+    output_bytes = bytearray()
+    for byte in chunk:
+        # 8비트 부호 없는 정수를 16비트 부호 있는 정수로 변환
+        sample_16bit = (byte - 128) * 256
+        # 16비트 샘플을 리틀 엔디안 바이트 순서로 추가
+        output_bytes.extend(sample_16bit.to_bytes(2, byteorder='little', signed=True))
+    return bytes(output_bytes)
 
 import tempfile
 from pydub import AudioSegment
@@ -91,7 +79,6 @@ class FileStreamer:
         content = self.file.read(size)
         return content
 
-
 class RTZROpenAPIClient:
     def __init__(self, client_id, client_secret):
         super().__init__()
@@ -122,20 +109,17 @@ class RTZROpenAPIClient:
 
             def req_iterator():
                 yield pb.DecoderRequest(streaming_config=config)
-                # with FileStreamer("rec.wav") as f:
-                #     while True:
-                #         buff = f.read(size=DEFAULT_BUFFER_SIZE)
-                #         if buff is None or len(buff) == 0:
-                #             break
-                #         yield pb.DecoderRequest(audio_content=buff)
-                print("reading audio1")
-                while call.state == CallState.ANSWERED:
-                    print("reading audio2")
-                    buff = call.read_audio(DEFAULT_BUFFER_SIZE)
-                    print(buff)
-                    if buff is None or len(buff) == 0:
-                        break
-                    yield pb.DecoderRequest(audio_content=buff)
+                try:
+                    while call.state == CallState.ANSWERED:
+                        buff = call.read_audio()
+                        if buff is None or len(buff) == 0:
+                            break
+                        buff = convert_audio(buff)
+                        yield pb.DecoderRequest(audio_content=buff)
+                        # 오디오 데이터를 파일에 저장
+                        self.save_audio_chunk(buff)
+                except Exception as e:
+                    print(e)
 
             req_iter = req_iterator()
             resp_iter = stub.Decode(req_iter, credentials=cred)
@@ -147,6 +131,20 @@ class RTZROpenAPIClient:
                             res.is_final, res.alternatives[0].text
                         )
                     )
+
+    def save_audio_chunk(self, chunk):
+        if not hasattr(self, 'audio_file'):
+            self.audio_file = wave.open(f'recorded_audio_{int(time.time())}.wav', 'wb')
+            self.audio_file.setnchannels(1)
+            self.audio_file.setsampwidth(2)
+            self.audio_file.setframerate(SAMPLE_RATE)
+        
+        self.audio_file.writeframes(chunk)
+
+    def close_audio_file(self):
+        if hasattr(self, 'audio_file'):
+            self.audio_file.close()
+            del self.audio_file
 
 def answer(call):
     call.answer()
@@ -162,7 +160,10 @@ def answer(call):
     )
 
     client = RTZROpenAPIClient(CLIENT_ID, CLIENT_SECRET)
-    client.transcribe_streaming_grpc(call, config)
+    try:
+        client.transcribe_streaming_grpc(call, config)
+    finally:
+        client.close_audio_file()
 
     call.hangup()
 
