@@ -5,6 +5,7 @@ import os
 import dotenv
 import json
 import asyncio
+import wave
 
 dotenv.load_dotenv()
 
@@ -37,7 +38,8 @@ class RTZRClient:
         if config is None:
             config = dict(
                 sample_rate="16000",
-                encoding="LINEAR16",
+                encoding="MULAW",
+                model_name="sommers_ko",
                 use_itn="true",
                 use_disfluency_filter="false",
                 use_profanity_filter="false",
@@ -55,16 +57,19 @@ class RTZRClient:
     
     async def stream(self, data):
         await self.websocket.send(data)
+        print(">", end="", flush=True)
 
     async def stop(self):
         await self.websocket.send("EOS")
         await self.websocket.close()
         self.websocket = None
 
+
     async def transcriber(self):
         try:
             async for msg in self.websocket:
                 msg = json.loads(msg)
+                print(msg)
                 if msg["final"]:
                     await self.queue.put(msg["alternatives"][0]["text"])
                     print("User: " + msg["alternatives"][0]["text"])
