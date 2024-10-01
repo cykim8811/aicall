@@ -28,7 +28,7 @@ def play_voice_clova(text):
 
     data = {
         "speaker": "nara",
-        "speed": "-2",
+        "speed": "0",
         "text": text
     }
 
@@ -40,7 +40,18 @@ premade_audio = {
     for key, text in premade_text.items()
 }
 
+from pydub import AudioSegment
+import io
+
+
 # save to /premade_audio
 for key, audio in premade_audio.items():
-    with open(f"premade_audio/{key}.mp3", "wb") as f:
-        f.write(audio)
+    with open(f"premade_audio/{key}.wav", "wb") as f:
+        # f.write(audio)
+        # convert to 8kHz 8bit mono
+        audio = AudioSegment.from_mp3(io.BytesIO(audio))
+        audio = audio.set_frame_rate(8000)
+        audio = audio.set_channels(1)
+        audio = audio.set_sample_width(1)
+        audio.export(f, format="wav")
+        

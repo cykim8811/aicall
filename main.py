@@ -75,6 +75,39 @@ class FileStreamer:
         content = self.file.read(size)
         return content
 
+import anthropic
+import os
+import dotenv
+dotenv.load_dotenv()
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+def done_conversation(conversation):
+    conversation.append({"role": "user", "content": """
+위의 대화를 바탕으로, 해당하는 정보를 XML 형식으로 반환합니다.
+
+예시)
+<reservation>
+    <name>홍길동</name>
+    <phone>010-1234-5678</phone>
+    <date>2021-08-01</date>
+    <birth>1990-01-01</birth>
+    <address>서울시 강남구 역삼동 123-45</address>
+    <insurance>true</insurance>
+    <time>14:00</time>
+    <symptom>치통</symptom>
+    <doctor>김철수</doctor> // optional
+    <note>특이사항 없음</note> // optional
+</reservation>
+"""})
+    message = anthropic_client.messages.create(
+        system="주어진 대화를 바탕으로, 해당하는 정보를 XML 형식으로 반환합니다.",
+        max_tokens=1024,
+        messages=conversation,
+        model="claude-3-5-sonnet-20240620",
+    )
+    print(message.content[0].text)
+
 class RTZROpenAPIClient:
     def __init__(self, client_id, client_secret):
         super().__init__()
@@ -95,8 +128,8 @@ class RTZROpenAPIClient:
             self._token = resp.json()
         return self._token["access_token"]
     
-    def send_audio(self, call, queue):
-        while call.state == CallState.ANSWERED:
+    def send_audio(self, call, queue, stt_hangup):
+        while call.state == CallState.ANSWERED and len(stt_hangup) == 0:
             audio = call.read_audio()
             if audio is None:
                 break
@@ -110,13 +143,20 @@ class RTZROpenAPIClient:
             stub = pb_grpc.OnlineDecoderStub(channel)
             cred = grpc.access_token_call_credentials(self.token)
 
+            from output_stream import run_tts
+            
+            input_queue = []
+            halt_tts = []
+            tts_hangup = []
+            stt_hangup = []
+
             def req_iterator():
                 yield pb.DecoderRequest(streaming_config=config)
                 try:
                     queue = []
-                    input_thread = threading.Thread(target=self.send_audio, args=(call, queue))
+                    input_thread = threading.Thread(target=self.send_audio, args=(call, queue, stt_hangup))
                     input_thread.start()
-                    while call.state == CallState.ANSWERED:
+                    while call.state == CallState.ANSWERED and len(halt_tts) == 0 and len(tts_hangup) == 0:
                         time.sleep(1/50)
                         if len(queue) == 0:
                             buff = b"\x00" * 160
@@ -126,15 +166,16 @@ class RTZROpenAPIClient:
                         yield pb.DecoderRequest(audio_content=buff)
                         # 오디오 데이터를 파일에 저장
                         self.save_audio_chunk(buff)
+                    stt_hangup.append(True)
                     input_thread.join()
                 except Exception as e:
                     print(e)
             
-            from output_stream import run_tts
-            input_queue = []
-            halt_tts = []
-            tts_hangup = []
-            tts_thread = threading.Thread(target=run_tts, args=(call, input_queue, halt_tts, tts_hangup))
+            conversation = [
+                {"role": "user", "content": "(통화 시작)"},
+                {"role": "assistant", "content": "안녕하세요, 스탠다드치과의원 잠실본점입니다. 무엇을 도와드릴까요?"}
+            ]
+            tts_thread = threading.Thread(target=run_tts, args=(conversation, call, input_queue, halt_tts, tts_hangup))
             tts_thread.start()
 
             req_iter = req_iterator()
@@ -148,6 +189,7 @@ class RTZROpenAPIClient:
             
             halt_tts.append(True)
             tts_thread.join()
+            done_conversation(conversation)
 
     def save_audio_chunk(self, chunk):
         if not hasattr(self, 'audio_file'):
@@ -165,8 +207,8 @@ class RTZROpenAPIClient:
 
 def answer(call):
     call.answer()
-    call.write_audio(greeting_audio)
-    time.sleep(5)
+    # call.write_audio(greeting_audio)
+    time.sleep(1)
 
     config = pb.DecoderConfig(
         sample_rate=SAMPLE_RATE,
