@@ -227,8 +227,9 @@ def answer(call):
     call.hangup()
 
 vp = VoIPPhone(
-    'london1.voip.ms', 5060, '420319_ai', 
-    PASSWORD, callCallback=answer
+    'london1.voip.ms', 5060, '420319_ai2',
+    PASSWORD, myIP='0.0.0.0',
+    callCallback=answer
 )
 vp.start()
 print(vp._status)
